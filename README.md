@@ -3,7 +3,6 @@
 A platform-agnostic, multi-arch container image for [`agcm`](https://github.com/atgreen/agcm) — Anthony Green's terminal UI for the Red Hat Customer Portal API — built on Red Hat Universal Base Image 10.
 
 [![Build and Push](https://github.com/ryannix123/agcm-on-ubi/actions/workflows/build.yml/badge.svg)](https://github.com/ryannix123/agcm-on-ubi/actions/workflows/build.yml)
-[![Container Repository on Quay](https://quay.io/repository/ryan_nix/agcm/status "Container Repository on Quay")](https://quay.io/repository/ryan_nix/agcm)
 [![License: GPL v3+](https://img.shields.io/badge/License-GPLv3+-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 > **Disclaimer:** This is a personal project and is **not** an official Red Hat product. It is not supported by Red Hat. The upstream `agcm` project is independently maintained by Anthony Green.
@@ -28,55 +27,81 @@ Built nightly from [`registry.access.redhat.com/ubi10-minimal`](https://catalog.
 
 ## Quick start
 
-```bash
-# One-time: authenticate with your Red Hat offline token
-# Get one at https://access.redhat.com/management/api
-podman run -it --rm \
-  -v "$HOME/.config/agcm:/config/agcm:Z" \
-  quay.io/ryan_nix/agcm:latest auth login
+The simplest way to use this image is to run a long-lived container in the background and `podman exec` into it whenever you need agcm. This avoids any volumes or host config files — your auth token and presets live inside the container's writable layer for as long as the container exists.
 
-# Launch the TUI
-podman run -it --rm \
-  -v "$HOME/.config/agcm:/config/agcm:Z" \
-  -e TERM \
-  quay.io/ryan_nix/agcm:latest
+### 1. Start the container (once per session)
+
+```bash
+podman run -dit --name agcm \
+  --entrypoint sleep \
+  quay.io/ryan_nix/agcm:latest infinity
 ```
 
-### Recommended shell alias
+This launches a detached container named `agcm` that just sleeps forever, ready to accept `exec` commands.
 
-Drop this in your `~/.zshrc` or `~/.bashrc` so `agcm` feels like a native binary:
+### 2. Authenticate (once per container)
+
+Get an offline token from <https://access.redhat.com/management/api>, then:
 
 ```bash
-alias agcm='podman run -it --rm \
-  -v "$HOME/.config/agcm:/config/agcm:Z" \
-  -e TERM \
-  quay.io/ryan_nix/agcm:latest'
+podman exec -it agcm agcm auth login
 ```
 
-Then:
+### 3. Use agcm
 
 ```bash
-agcm                              # Launch TUI
-agcm list cases --status open     # CLI mode
-agcm export case 01234567         # Export a case to markdown
-agcm search "kernel panic"        # Search cases and KCS solutions
+podman exec -it agcm agcm                           # Launch TUI
+podman exec -it agcm agcm list cases --status open  # CLI mode
+podman exec -it agcm agcm export case 01234567      # Export a case to markdown
+podman exec -it agcm agcm search "kernel panic"     # Search cases and KCS solutions
+```
+
+You can quit the TUI with `q` as many times as you like — the container keeps running, and your auth token persists between sessions.
+
+### 4. Stop when done
+
+```bash
+podman rm -f agcm
+```
+
+This destroys the container and everything in it, including the offline token. Next session, repeat from step 1. If you'd rather your token survive container removal, use a named volume — see [Persistent variant](#persistent-variant) below.
+
+## Recommended shell aliases
+
+Drop these in your `~/.zshrc` or `~/.bashrc`:
+
+```bash
+alias agcm='podman exec -it agcm agcm'
+alias agcm-start='podman run -dit --name agcm --entrypoint sleep quay.io/ryan_nix/agcm:latest infinity'
+alias agcm-stop='podman rm -f agcm'
+```
+
+Daily flow becomes:
+
+```bash
+agcm-start                  # once per session
+agcm auth login             # once per container
+agcm                        # whenever you want it
+agcm list cases --status open
+agcm-stop                   # when you're done
 ```
 
 See the [upstream agcm README](https://github.com/atgreen/agcm#readme) for the full command and keyboard reference.
 
-## Configuration & token storage
+## Persistent variant
 
-Inside the container there is no D-Bus / Secret Service / macOS Keychain, so `agcm` automatically falls back to file-based token storage. The `-v "$HOME/.config/agcm:/config/agcm:Z"` bind mount persists three things across runs:
+If you'd rather not re-authenticate every session, use a named volume mounted at `/config` (which is where the container sets `XDG_CONFIG_HOME`):
 
-- The encrypted offline token
-- Your `config.yaml` (API URL, default account/group, filter presets 1–9, 0)
-- Any cached state
+```bash
+podman volume create agcm-config
 
-The container sets `XDG_CONFIG_HOME=/config`, so `agcm` writes everything under `/config/agcm` inside the container, which maps cleanly to `~/.config/agcm` on the host — the same path you'd get from a native install.
+podman run -dit --name agcm \
+  -v agcm-config:/config \
+  --entrypoint sleep \
+  quay.io/ryan_nix/agcm:latest infinity
+```
 
-### `:Z` vs `:z` on SELinux hosts
-
-The examples use `:Z` (private label) since you're the only user of the volume. If you're sharing the config dir between containers, use `:z` (shared label) instead. On non-SELinux hosts (macOS, most Ubuntu), the suffix is a harmless no-op.
+The volume lives inside the Podman machine VM and survives `podman rm -f agcm`. Nuke it with `podman volume rm agcm-config` if you ever need to reset.
 
 ## Image design
 
@@ -122,21 +147,3 @@ A manual `workflow_dispatch` with the `force` toggle rebuilds against the latest
 - **[ryannix123/rh-customer-portal](https://github.com/ryannix123/rh-customer-portal)** — A companion project from my colleague exploring the Red Hat Customer Portal API.
 - **[Red Hat Customer Portal API documentation](https://access.redhat.com/management/api)** — Official API reference and offline token management.
 - **[Red Hat Universal Base Images](https://catalog.redhat.com/software/base-images)** — UBI 10 base image catalog.
-
-## Other containerized OpenShift workloads
-
-If you found this useful, you might also like my other personal "deploy open-source apps to OpenShift the right way" projects:
-
-- [openemr-on-openshift](https://github.com/ryannix123/openemr-on-openshift) — OpenEMR EHR on OpenShift
-- [nextcloud-on-openshift](https://github.com/ryannix123/nextcloud-on-openshift) — Nextcloud with Collabora and Talk HPB
-- [openldap-on-openshift](https://github.com/ryannix123/openldap-on-openshift) — OpenLDAP as an LDAPS auth service
-- [single-node-openshift](https://github.com/ryannix123/single-node-openshift) — SNO home lab automation
-
-## License
-
-The `agcm` source code is licensed under [GPL-3.0-or-later](https://github.com/atgreen/agcm/blob/master/LICENSE), copyright Anthony Green. The packaging files in this repository (Containerfile, GitHub Actions workflow, README) are released under the same license to keep things simple.
-
-## Author
-
-Ryan Nix — Senior Solutions Architect, Red Hat
-[YouTube](https://www.youtube.com/@ryannix) · [GitHub](https://github.com/ryannix123)
