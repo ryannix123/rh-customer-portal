@@ -1,0 +1,118 @@
+name: Build and Push agcm Container
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Containerfile'
+      - '.github/workflows/build.yml'
+  schedule:
+    - cron: '17 6 * * *'   # daily 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force rebuild even if version unchanged'
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: quay.io
+  IMAGE_NAMESPACE: ryan_nix
+  IMAGE_NAME: agcm
+  UPSTREAM_REPO: atgreen/agcm
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_version: ${{ steps.upstream.outputs.version }}
+      should_build: ${{ steps.decide.outputs.should_build }}
+    steps:
+      - name: Get latest upstream release
+        id: upstream
+        run: |
+          VERSION=$(curl -fsSL https://api.github.com/repos/${{ env.UPSTREAM_REPO }}/releases/latest \
+            | jq -r .tag_name | sed 's/^v//')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Upstream latest: ${VERSION}"
+
+      - name: Check if image already exists in Quay
+        id: decide
+        run: |
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            echo "Force rebuild requested"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TAG="${{ steps.upstream.outputs.version }}"
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://quay.io/api/v1/repository/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}/tag/?specificTag=${TAG}&onlyActiveTags=true")
+          EXISTS=$(curl -fsSL \
+            "https://quay.io/api/v1/repository/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}/tag/?specificTag=${TAG}&onlyActiveTags=true" \
+            | jq '.tags | length')
+          if [ "${EXISTS:-0}" -gt 0 ]; then
+            echo "Image ${TAG} already in Quay — skipping build"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout (this repo — Containerfile only)
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream agcm source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: v${{ needs.check-version.outputs.upstream_version }}
+          path: upstream
+
+      - name: Stage build context
+        run: cp Containerfile upstream/Containerfile
+
+      - name: Install qemu for multi-arch
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Buildah build (amd64 + arm64)
+        id: build
+        uses: redhat-actions/buildah-build@v2
+        with:
+          image: ${{ env.IMAGE_NAME }}
+          tags: ${{ needs.check-version.outputs.upstream_version }} latest
+          context: upstream
+          containerfiles: upstream/Containerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ needs.check-version.outputs.upstream_version }}
+
+      - name: Log in to Quay.io
+        uses: redhat-actions/podman-login@v1
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: Push to Quay
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ steps.build.outputs.image }}
+          tags: ${{ steps.build.outputs.tags }}
+          registry: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}
+
+      - name: Summary
+        run: |
+          echo "### Built agcm ${{ needs.check-version.outputs.upstream_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- \`quay.io/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.check-version.outputs.upstream_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`quay.io/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Platforms: linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
