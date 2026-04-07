@@ -57,13 +57,23 @@ podman exec -it agcm agcm search "kernel panic"     # Search cases and KCS solut
 
 You can quit the TUI with `q` as many times as you like — the container keeps running, and your auth token persists between sessions.
 
-### 4. Stop when done
+### 4. Open a shell in the container
+
+If you want to poke around directly, list files, or run commands side-by-side with the TUI:
+
+```bash
+podman exec -it agcm bash
+```
+
+Exit with `exit` or Ctrl+D — the container keeps running.
+
+### 5. Stop when done
 
 ```bash
 podman rm -f agcm
 ```
 
-This destroys the container and everything in it, including the offline token. Next session, repeat from step 1. If you'd rather your token survive container removal, use a named volume — see [Persistent variant](#persistent-variant) below.
+This destroys the container and everything in it, including the offline token **and any exported reports**. If you want your exports to survive, see [Getting reports out of the container](#getting-reports-out-of-the-container) below.
 
 ## Recommended shell aliases
 
@@ -71,6 +81,7 @@ Drop these in your `~/.zshrc` or `~/.bashrc`:
 
 ```bash
 alias agcm='podman exec -it agcm agcm'
+alias agcm-shell='podman exec -it agcm bash'
 alias agcm-start='podman run -dit --name agcm --entrypoint sleep quay.io/ryan_nix/agcm:latest infinity'
 alias agcm-stop='podman rm -f agcm'
 ```
@@ -78,29 +89,86 @@ alias agcm-stop='podman rm -f agcm'
 Daily flow becomes:
 
 ```bash
-agcm-start                  # once per session
-agcm auth login             # once per container
-agcm                        # whenever you want it
+agcm-start                          # once per session
+agcm auth login                     # once per container
+agcm                                # whenever you want it
 agcm list cases --status open
-agcm-stop                   # when you're done
+agcm-stop                           # when you're done
 ```
 
 See the [upstream agcm README](https://github.com/atgreen/agcm#readme) for the full command and keyboard reference.
 
-## Persistent variant
+## Getting reports out of the container
 
-If you'd rather not re-authenticate every session, use a named volume mounted at `/config` (which is where the container sets `XDG_CONFIG_HOME`):
+Case exports produced by `agcm export` live inside the container's writable layer and disappear when you `podman rm -f agcm`. You've got two options for getting them out.
+
+### Option A: `podman cp` (ad-hoc, no setup)
+
+Export normally, then copy the result to your host:
 
 ```bash
-podman volume create agcm-config
+# Export a case inside the container (lands in /home/agcm by default)
+podman exec -it agcm agcm export case 01234567
+
+# Copy it out to your Desktop
+podman cp agcm:/home/agcm/01234567.md ~/Desktop/
+
+# Or copy the whole home dir if you've exported several
+podman cp agcm:/home/agcm/. ~/Desktop/agcm-reports/
+```
+
+You can also push files *into* the container the same way — just flip the arguments (`podman cp ~/Desktop/notes.md agcm:/home/agcm/`).
+
+This is the simplest approach: no volumes, no permission fiddling, and `podman cp` works even on a stopped container.
+
+### Option B: Named volume mounted at `/exports` (automatic persistence)
+
+If you want every export to automatically land on a persistent volume that survives `agcm-stop`, create a volume and mount it when starting the container:
+
+```bash
+podman volume create agcm-exports
 
 podman run -dit --name agcm \
-  -v agcm-config:/config \
+  -v agcm-exports:/exports \
   --entrypoint sleep \
   quay.io/ryan_nix/agcm:latest infinity
 ```
 
-The volume lives inside the Podman machine VM and survives `podman rm -f agcm`. Nuke it with `podman volume rm agcm-config` if you ever need to reset.
+Then explicitly tell `agcm export` to use that directory:
+
+```bash
+podman exec -it agcm agcm export case 01234567 -d /exports
+podman exec -it agcm agcm export cases --status open -d /exports
+```
+
+To pull the whole volume out to your host:
+
+```bash
+podman cp agcm:/exports/. ~/Desktop/agcm-reports/
+```
+
+The volume persists across `podman rm -f agcm`, so next session the previous exports are still in `/exports`. Wipe the volume when you're truly done:
+
+```bash
+podman volume rm agcm-exports
+```
+
+### Option C: Also persist the auth token
+
+If you'd like both reports *and* your offline token to survive container removal, add a second volume for `/config` (the container sets `XDG_CONFIG_HOME=/config`):
+
+```bash
+podman volume create agcm-config
+podman volume create agcm-exports
+
+podman run -dit --name agcm \
+  -v agcm-config:/config \
+  -v agcm-exports:/exports \
+  --entrypoint sleep \
+  quay.io/ryan_nix/agcm:latest infinity
+```
+
+Now `agcm auth login` only has to happen once, and all exports to `/exports` stick around.
 
 ## Image design
 
@@ -116,8 +184,8 @@ The volume lives inside the Podman machine VM and survives `podman rm -f agcm`. 
 ## Building locally
 
 ```bash
-git clone https://github.com/ryannix123/agcm-on-ubi.git
-cd agcm-on-ubi
+git clone https://github.com/ryannix123/rh-customer-portal.git
+cd rh-customer-portal
 
 # Single-arch (your host's native arch)
 podman build -t agcm:dev --build-arg VERSION=dev .
@@ -143,6 +211,5 @@ A manual `workflow_dispatch` with the `force` toggle rebuilds against the latest
 ## Related projects
 
 - **[atgreen/agcm](https://github.com/atgreen/agcm)** — The upstream TUI this image packages. All credit for the actual application goes to [Anthony Green](https://github.com/atgreen).
-- **[ryannix123/rh-customer-portal](https://github.com/ryannix123/rh-customer-portal)** — A companion project from my colleague exploring the Red Hat Customer Portal API.
 - **[Red Hat Customer Portal API documentation](https://access.redhat.com/management/api)** — Official API reference and offline token management.
 - **[Red Hat Universal Base Images](https://catalog.redhat.com/software/base-images)** — UBI 10 base image catalog.
