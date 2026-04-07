@@ -2,8 +2,7 @@
 
 A platform-agnostic, multi-arch container image for [`agcm`](https://github.com/atgreen/agcm) — Anthony Green's terminal UI for the Red Hat Customer Portal API — built on Red Hat Universal Base Image 10.
 
-[![Build and Push](https://github.com/ryannix123/agcm-on-ubi/actions/workflows/build.yml/badge.svg)](https://github.com/ryannix123/agcm-on-ubi/actions/workflows/build.yml)
-[![License: GPL v3+](https://img.shields.io/badge/License-GPLv3+-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Build and Push agcm Container](https://github.com/ryannix123/rh-customer-portal/actions/workflows/build.yml/badge.svg)](https://github.com/ryannix123/rh-customer-portal/actions/workflows/build.yml)
 
 > **Disclaimer:** This is a personal project and is **not** an official Red Hat product. It is not supported by Red Hat. The upstream `agcm` project is independently maintained by Anthony Green.
 
